@@ -36,6 +36,7 @@ class RmfNexusTransporter::Implementation {
 public:
   struct WorkcellSession {
     std::string name;
+    std::string task_id;
     rclcpp::Client<nexus::endpoints::SignalWorkcellService::ServiceType>::SharedPtr client;
   };
 
@@ -126,14 +127,14 @@ public:
     if (!signal_destination.empty())
     {
       auto client = n->create_client<nexus::endpoints::SignalWorkcellService::ServiceType>(
-         nexus::endpoints::SignalWorkcellService::service_name(signal_destination));
-      job_id_to_signal_destination.insert({itinerary.id(), WorkcellSession {signal_destination, client}});
+         nexus::endpoints::SignalWorkcellService::service_name(itinerary.destination()));
+      job_id_to_signal_destination.insert({itinerary.id(), WorkcellSession {itinerary.destination(), signal_destination, client}});
     }
     if (!signal_source.empty())
     {
       auto client = n->create_client<nexus::endpoints::SignalWorkcellService::ServiceType>(
-         nexus::endpoints::SignalWorkcellService::service_name(signal_source));
-      job_id_to_signal_source.insert({itinerary.id(), WorkcellSession {signal_source, client}});
+         nexus::endpoints::SignalWorkcellService::service_name(itinerary.source()));
+      job_id_to_signal_source.insert({itinerary.id(), WorkcellSession {itinerary.source(), signal_source, client}});
     }
   }
 
@@ -232,7 +233,7 @@ private:
     std::cout << "Sending signal" << std::endl;
     // Now send the signal
     auto req = std::make_shared<nexus::endpoints::SignalWorkcellService::ServiceType::Request>();
-    req->task_id = rmf_id_it->second;
+    req->task_id = it->second.task_id;
     // TODO(luca) this should probably be an enum constant
     req->signal = "transporter_done";
     // TODO(luca) provide a callback here
@@ -271,7 +272,7 @@ private:
     std::cout << "Sending signal" << std::endl;
     // Now send the signal
     auto req = std::make_shared<nexus::endpoints::SignalWorkcellService::ServiceType::Request>();
-    req->task_id = rmf_id_it->second;
+    req->task_id = it->second.task_id;
     // TODO(luca) this should probably be an enum constant
     req->signal = "transporter_done";
     // TODO(luca) provide a callback here
