@@ -1,0 +1,5 @@
+<library path="rmf_nexus_transporter">
+  <class type="rmf_nexus_transporter::RmfNexusTransporter" base_class_type="nexus_transporter::Transporter">
+    <description>RMF Nexus transporter plugin using AMRs.</description>
+  </class>
+</library>
