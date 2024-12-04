@@ -66,7 +66,7 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
-pluginlib_export_plugin_description_file(rmf_nexus_transporter transporter_plugin.xml)
+pluginlib_export_plugin_description_file(nexus_transporter transporter_plugin.xml)
 
 ament_export_include_directories(
   "include/${PROJECT_NAME}"

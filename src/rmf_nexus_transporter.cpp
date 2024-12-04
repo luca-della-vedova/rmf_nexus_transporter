@@ -127,13 +127,13 @@ public:
     if (!signal_destination.empty())
     {
       auto client = n->create_client<nexus::endpoints::SignalWorkcellService::ServiceType>(
-         nexus::endpoints::SignalWorkcellService::service_name(itinerary.destination()));
+         nexus::endpoints::SignalWorkcellService::service_name("system_orchestrator"));
       job_id_to_signal_destination.insert({itinerary.id(), WorkcellSession {itinerary.destination(), signal_destination, client}});
     }
     if (!signal_source.empty())
     {
       auto client = n->create_client<nexus::endpoints::SignalWorkcellService::ServiceType>(
-         nexus::endpoints::SignalWorkcellService::service_name(itinerary.source()));
+         nexus::endpoints::SignalWorkcellService::service_name("system_orchestrator"));
       job_id_to_signal_source.insert({itinerary.id(), WorkcellSession {itinerary.source(), signal_source, client}});
     }
   }
@@ -235,7 +235,7 @@ private:
     auto req = std::make_shared<nexus::endpoints::SignalWorkcellService::ServiceType::Request>();
     req->task_id = it->second.task_id;
     // TODO(luca) this should probably be an enum constant
-    req->signal = "transporter_done";
+    req->signal = "transporter_at_source";
     // TODO(luca) provide a callback here
     // TODO(luca) cleanup periodically pending requests at the end of tasks to avoid leaking if
     // the target workcell is not listening to signals
@@ -274,7 +274,7 @@ private:
     auto req = std::make_shared<nexus::endpoints::SignalWorkcellService::ServiceType::Request>();
     req->task_id = it->second.task_id;
     // TODO(luca) this should probably be an enum constant
-    req->signal = "transporter_done";
+    req->signal = "transporter_at_destination";
     // TODO(luca) provide a callback here
     // TODO(luca) cleanup periodically pending requests at the end of tasks to avoid leaking if
     // the target workcell is not listening to signals
