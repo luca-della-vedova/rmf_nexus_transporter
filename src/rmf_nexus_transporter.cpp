@@ -73,9 +73,11 @@ void RmfNexusTransporter::init_subscriptions()
     req,
     nexus::endpoints::IsTaskDoableService::ServiceType::Response::SharedPtr resp)
     {
-      this->_handle_task_doable(req, resp);
+      this->handle_task_doable(req, resp);
     });
 
+  // TODO(luca) consider parametrizing this and allowing users to request signaling
+  // to workcells instead
   this->_signal_client = this->create_client<nexus::endpoints::SignalWorkcellService::ServiceType>(
      nexus::endpoints::SignalWorkcellService::service_name("system_orchestrator"));
 
@@ -111,31 +113,22 @@ void RmfNexusTransporter::init_subscriptions()
     [this](std::shared_ptr<rclcpp_action::ServerGoalHandle<WorkcellRequest>>
     goal_handle)
     {
-      RCLCPP_INFO(this->get_logger(), "Got cancel request");
-      // TODO(luca) implement cancellation with RMF request
-      /*
       const auto& goal = goal_handle->get_goal();
-      auto it =
-      std::find_if(this->_ctxs.begin(), this->_ctxs.end(),
-      [&goal](const std::shared_ptr<Context>& ctx)
-      {
-        return goal->task.id == ctx->task.id;
-      });
-
-      if (it == this->_ctxs.end())
+      RCLCPP_INFO(this->get_logger(), "Got cancel request for task %s", goal->task.id.c_str());
+      auto it = this->job_id_to_sessions.find(goal->task.id);
+      if (it == this->job_id_to_sessions.end())
       {
         RCLCPP_WARN(this->get_logger(),
         "Fail to cancel task [%s]: task does not exist", goal->task.id.c_str());
       }
       else
       {
-        // we can just remove a task that is not running
-        if ((*it)->task_state.status != TaskState::STATUS_RUNNING)
+        const auto& rmf_task_id = it->second.rmf_task_id;
+        if (rmf_task_id.has_value())
         {
-          this->_ctxs.erase(it);
+          this->cancel_task(rmf_task_id.value());
         }
       }
-      */
       return rclcpp_action::CancelResponse::ACCEPT;
     },
     [this](std::shared_ptr<rclcpp_action::ServerGoalHandle<WorkcellRequest>>
@@ -172,11 +165,12 @@ void RmfNexusTransporter::init_subscriptions()
           result);
         return;
       }
-      if (!submit_itinerary(goal_handle))
+      auto err = submit_itinerary(goal_handle);
+      if (err.has_value())
       {
         auto result =
         std::make_shared<WorkcellRequest::Result>();
-        result->message = "Transporter failed generating itinerary for task " + task.id;
+        result->message = "Transporter failed generating itinerary for task [" + task.id + "], error details: " + err.value();
         result->success = false;
         RCLCPP_ERROR_STREAM(this->get_logger(), result->message);
         goal_handle->abort(
@@ -185,6 +179,8 @@ void RmfNexusTransporter::init_subscriptions()
       }
       RCLCPP_INFO(this->get_logger(), "Executing task [%s]", task.id.c_str());
       auto fb = std::make_shared<WorkcellRequest::Feedback>();
+      fb->state.workcell_id = this->get_name();
+      fb->state.task_id = task.id;
       fb->state.status = TaskState::STATUS_RUNNING;
       goal_handle->publish_feedback(fb);
     });
@@ -268,8 +264,7 @@ void RmfNexusTransporter::register_workcell()
     register_cb);
 }
 
-// void RmfNexusTransporter::submit_itinerary(const std::string& job_id, const YAML::Node& order)
-bool RmfNexusTransporter::submit_itinerary(GoalHandlePtr goal)
+std::optional<std::string> RmfNexusTransporter::submit_itinerary(GoalHandlePtr goal)
 {
   const auto& job_id = goal->get_goal()->task.id;
   try
@@ -311,7 +306,7 @@ bool RmfNexusTransporter::submit_itinerary(GoalHandlePtr goal)
       else
       {
         // Error!
-        return false;
+        return "Order element did not contain \"type\" and \"destination\" fields";
       }
     }
     nlohmann::json act_obj;
@@ -319,18 +314,17 @@ bool RmfNexusTransporter::submit_itinerary(GoalHandlePtr goal)
     d["phases"].push_back(act_obj);
     r["description"] = d;
     j["request"] = r;
-    std::cout << j.dump(4) << std::endl;
     ApiRequest msg;
     msg.json_msg = j.dump();
     msg.request_id = job_id;
     _api_request_pub->publish(msg);
     job_id_to_sessions.insert({job_id, WorkcellSession {std::nullopt, goal, places}});
-    return true;
   }
   catch (const YAML::Exception& e)
   {
-    return false;
+    return std::string("Failed parsing YAML: ") + e.what();
   }
+  return std::nullopt;
 }
 
 std::optional<std::string> RmfNexusTransporter::process_signal(const std::string& job_id, const std::string& signal)
@@ -371,9 +365,6 @@ std::optional<std::string> RmfNexusTransporter::process_signal(const std::string
 
 void RmfNexusTransporter::dispenser_request_cb(const DispenserRequest& msg)
 {
-  // Send a message to the signal_source port
-  // TODO(luca) dispensers _actually_ have a target for their request so we
-  // could change the signaling primitives to just be a boolean, or just always signal?
   const auto rmf_id_it = rmf_task_id_to_job_id.find(msg.request_guid);
   if (rmf_id_it == rmf_task_id_to_job_id.end())
   {
@@ -384,16 +375,9 @@ void RmfNexusTransporter::dispenser_request_cb(const DispenserRequest& msg)
   {
     return;
   }
-  if (sent_source_signals.find(msg.request_guid) != sent_source_signals.end())
-  {
-    // TODO(luca) Send success here?
-    return;
-  }
-  std::cout << "Sending signal" << std::endl;
   // Now send the signal
   auto req = std::make_shared<nexus::endpoints::SignalWorkcellService::ServiceType::Request>();
   req->task_id = rmf_id_it->second;
-  // TODO(luca) this should probably be an enum constant
   req->signal = msg.target_guid;
   // TODO(luca) provide a callback here
   // TODO(luca) cleanup periodically pending requests at the end of tasks to avoid leaking if
@@ -405,37 +389,36 @@ void RmfNexusTransporter::dispenser_request_cb(const DispenserRequest& msg)
   res.source_guid = msg.target_guid;
   res.status = DispenserResult::ACKNOWLEDGED;
   this->_dispenser_result_pub->publish(res);
-  // sent_source_signals.insert(msg.request_guid);
 }
 
 void RmfNexusTransporter::api_response_cb(const ApiResponse& msg)
 {
-  std::cout << "Received API response" << std::endl;
   // Receive response, populate hashmaps
   if (msg.type != msg.TYPE_RESPONDING)
   {
-    std::cout << "Request was not responded to!" << std::endl;
     return;
   }
   auto j = nlohmann::json::parse(msg.json_msg, nullptr, false);
   if (j.is_discarded())
   {
-    std::cout << "Invalid json in api response" << std::endl;
+    RCLCPP_ERROR(this->get_logger(), "Invalid json in api response");
     return;
   }
   // TODO(luca) exception safety for missing fields
   if (j["success"] == false)
   {
-    std::cout << "Task submission failed" << std::endl;
+    RCLCPP_ERROR(this->get_logger(), "Task submission failed");
     return;
   }
-  std::cout << j.dump(4) << std::endl;
+  // Task cancellations don't have a state field
+  if (!j.contains("state"))
+    return;
   std::string rmf_id = j["state"]["booking"]["id"];
   std::string job_id = msg.request_id;
   auto session_it = job_id_to_sessions.find(job_id);
   if (session_it == job_id_to_sessions.end())
   {
-    std::cout << "Job id not found, this should not happen!" << std::endl;
+    RCLCPP_ERROR(this->get_logger(), "Job id [%s] not found, this should not happen!", job_id.c_str());
     return;
   }
   session_it->second.rmf_task_id = rmf_id;
@@ -444,49 +427,60 @@ void RmfNexusTransporter::api_response_cb(const ApiResponse& msg)
 
 void RmfNexusTransporter::task_state_cb(const TaskStateUpdate& msg)
 {
-  std::cout << "Received Task state" << std::endl;
   auto j = nlohmann::json::parse(msg.data, nullptr, false);
-  std::cout << j.dump(4) << std::endl;
   if (j.is_discarded())
   {
-    std::cout << "Invalid json in task state" << std::endl;
+    RCLCPP_ERROR(this->get_logger(), "Invalid json in task state");
     return;
   }
+  if (j["data"]["status"] != "completed" && j["data"]["status"] != "canceled")
+  {
+    return;
+  }
+  std::string rmf_id = j["data"]["booking"]["id"];
+  auto job_id_it = rmf_task_id_to_job_id.find(rmf_id);
+  if (job_id_it == rmf_task_id_to_job_id.end())
+  {
+    RCLCPP_DEBUG(this->get_logger(), "RMF id [%s] does not map to a NEXUS task", rmf_id.c_str());
+    return;
+  }
+  auto job_id = job_id_it->second;
+  rmf_task_id_to_job_id.erase(job_id_it);
+  auto session_it = job_id_to_sessions.find(job_id);
+  if (session_it == job_id_to_sessions.end())
+  {
+    RCLCPP_ERROR(this->get_logger(), "Session not found for job [%s], this should not happen", job_id.c_str());
+    return;
+  }
+  // Only complete action with success if it was completed
   if (j["data"]["status"] == "completed")
   {
-    // Finished!
-    std::string rmf_id = j["data"]["booking"]["id"];
-    auto job_id_it = rmf_task_id_to_job_id.find(rmf_id);
-    if (job_id_it == rmf_task_id_to_job_id.end())
-    {
-      std::cout << "Job id not found" << std::endl;
-      return;
-    }
-    auto job_id = job_id_it->second;
-    auto session_it = job_id_to_sessions.find(job_id);
-    if (session_it == job_id_to_sessions.end())
-    {
-      RCLCPP_ERROR(this->get_logger(), "Session not found for job [%s], this should not happen", job_id.c_str());
-      return;
-    }
     auto result = std::make_shared<nexus::endpoints::WorkcellRequestAction::ActionType::Result>();
     result->success = true;
     session_it->second.goal->succeed(result);
-    // Bookkeeping
-    // TODO(luca) also cleanup on cancellation successful, and when the above statements fail
-    job_id_to_sessions.erase(session_it);
-    rmf_task_id_to_job_id.erase(job_id_it);
   }
+  job_id_to_sessions.erase(session_it);
 }
 
 bool RmfNexusTransporter::can_perform_task(const WorkcellTask& task)
 {
   // TODO(luca) Do simple navgraph parsing and figure out whether the task is doable
   return task.type == "transportation";
-
 }
 
-void RmfNexusTransporter::_handle_task_doable(
+void RmfNexusTransporter::cancel_task(const std::string& task_id)
+{
+  // Resource cleanup is done in the task state update response
+  nlohmann::json j;
+  j["type"] = "cancel_task_request";
+  j["task_id"] = task_id;
+  ApiRequest msg;
+  msg.json_msg = j.dump();
+  msg.request_id = "cancel_task_" + task_id;
+  _api_request_pub->publish(msg);
+}
+
+void RmfNexusTransporter::handle_task_doable(
     nexus::endpoints::IsTaskDoableService::ServiceType::Request::ConstSharedPtr req,
     nexus::endpoints::IsTaskDoableService::ServiceType::Response::SharedPtr resp)
 {
@@ -514,91 +508,6 @@ CallbackReturn RmfNexusTransporter::on_cleanup(const rclcpp_lifecycle::State& pr
 {
   return CallbackReturn::SUCCESS;
 }
-
-/*
-// TODO(luca) In theory Nexus could send the same job_id since it's just the high level id.
-// For example if a job has more than one transportation request.
-std::optional<Itinerary> RmfNexusTransporter::get_itinerary(
-  const std::string& job_id,
-  const std::string& destination,
-  const std::string& source)
-{
-  // TODO(luca) Interface with a node that computes a simple itinerary with
-  // feasibility / time estimate based on the nav graph
-  if (!_pimpl)
-  {
-    return std::nullopt;
-  }
-  auto n = _pimpl->_node.lock();
-  if (!n)
-  {
-    return std::nullopt;
-  }
-  RCLCPP_INFO(
-    n->get_logger(),
-    "Received itinerary request with id [%s] for destination [%s]",
-    job_id.c_str(),
-    destination.c_str()
-  );
-
-  const auto now = n->get_clock()->now();
-  const rclcpp::Time finish_time = now + rclcpp::Duration::from_seconds(60.0);
-  const rclcpp::Time expiration_time = now + rclcpp::Duration::from_seconds(3600.0);
-  return Itinerary(
-    job_id,
-    destination,
-    "rmf",
-    finish_time,
-    expiration_time,
-    source
-  );
-}
-
-void RmfNexusTransporter::transport_to_destination(
-  const Itinerary& itinerary,
-  TransportFeedback feedback_cb,
-  TransportCompleted completed_cb,
-  const std::string& signal_destination,
-  const std::string& signal_source)
-{
-  if (!_pimpl)
-  {
-    return;
-  }
-  auto n = _pimpl->_node.lock();
-  if (!n)
-  {
-    return;
-  }
-  RCLCPP_INFO(
-    n->get_logger(),
-    "Received request to travel to destination [%s]",
-    itinerary.destination().c_str()
-  );
-
-  _pimpl->submit_itinerary(itinerary, completed_cb, signal_destination, signal_source);
-}
-
-bool RmfNexusTransporter::cancel(const Itinerary& itinerary)
-{
-  if (!_pimpl)
-  {
-    return false;
-  }
-  auto n = _pimpl->_node.lock();
-  if (!n)
-  {
-    return false;
-  }
-  RCLCPP_INFO(
-    n->get_logger(),
-    "Received request to cancel travel to destination [%s]",
-    itinerary.destination().c_str()
-  );
-  // TODO(luca) interface for task cancellation
-  return false;
-}
-*/
 
 }  // namespace rmf_nexus_transporter
 
