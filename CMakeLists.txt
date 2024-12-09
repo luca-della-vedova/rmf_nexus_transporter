@@ -9,46 +9,49 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_ros REQUIRED)
 find_package(nexus_endpoints REQUIRED)
-find_package(nexus_transporter REQUIRED)
 find_package(nlohmann_json REQUIRED)
-find_package(pluginlib REQUIRED)
+find_package(rclcpp_components REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
 find_package(rmf_dispenser_msgs REQUIRED)
 find_package(rmf_ingestor_msgs REQUIRED)
 find_package(rmf_task_msgs REQUIRED)
-find_package(rmf_utils REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(yaml_cpp_vendor REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
-add_library(rmf_nexus_transporter src/rmf_nexus_transporter.cpp)
-add_library(rmf_nexus_transporter::rmf_nexus_transporter ALIAS rmf_nexus_transporter)
-target_compile_features(rmf_nexus_transporter PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
-target_include_directories(rmf_nexus_transporter PUBLIC
+add_library(${PROJECT_NAME}_plugin src/rmf_nexus_transporter.cpp)
+target_compile_features(${PROJECT_NAME}_plugin PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
+target_compile_definitions(${PROJECT_NAME}_plugin PUBLIC "COMPOSITION_BUILDING_DLL")
+target_include_directories(${PROJECT_NAME}_plugin PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
-ament_target_dependencies(
-  rmf_nexus_transporter
+
+target_link_libraries(
+  ${PROJECT_NAME}_plugin
   PUBLIC
-    nexus_endpoints
-    nexus_transporter
-    nlohmann_json
-    pluginlib
-    rmf_dispenser_msgs
-    rmf_ingestor_msgs
-    rmf_task_msgs
-    rmf_utils
-    std_msgs
+    nexus_endpoints::nexus_endpoints
+    nlohmann_json::nlohmann_json
+    rclcpp_lifecycle::rclcpp_lifecycle
+    rclcpp_components::component
+    ${rmf_dispenser_msgs_TARGETS}
+    ${rmf_ingestor_msgs_TARGETS}
+    ${rmf_task_msgs_TARGETS}
+    ${std_msgs_TARGETS}
+    yaml-cpp::yaml-cpp
 )
 
-# Causes the visibility macros to use dllexport rather than dllimport,
-# which is appropriate when building the dll but not consuming it.
-target_compile_definitions(rmf_nexus_transporter PRIVATE "RMF_NEXUS_TRANSPORTER_BUILDING_LIBRARY")
+rclcpp_components_register_node(${PROJECT_NAME}_plugin
+  PLUGIN "rmf_nexus_transporter::RmfNexusTransporter"
+  EXECUTABLE ${PROJECT_NAME}
+)
 
 install(
   DIRECTORY include/
   DESTINATION include/${PROJECT_NAME}
 )
 install(
-  TARGETS rmf_nexus_transporter
-  EXPORT ${PROJECT_NAME}
+  TARGETS ${PROJECT_NAME}_plugin
+  EXPORT ${PROJECT_NAME}_targets
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
@@ -66,17 +69,12 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
-pluginlib_export_plugin_description_file(nexus_transporter transporter_plugin.xml)
-
 ament_export_include_directories(
   "include/${PROJECT_NAME}"
 )
 ament_export_targets(
-  ${PROJECT_NAME}
+  ${PROJECT_NAME}_targets
   HAS_LIBRARY_TARGET
-)
-ament_export_dependencies(
-  nexus_transporter
 )
 
 ament_package()
