@@ -334,8 +334,6 @@ std::optional<std::string> RmfNexusTransporter::process_signal(const std::string
   {
     return "Job [" + job_id + "] not found";
   }
-  // TODO(luca) should we create a custom message with defined constants to
-  // emulate an enum type for signals?
   auto signals_it = job_id_to_sessions.find(job_id);
   if (signals_it == job_id_to_sessions.end() || signals_it->second.signals.empty())
   {
@@ -488,24 +486,40 @@ void RmfNexusTransporter::handle_task_doable(
 }
 
 CallbackReturn RmfNexusTransporter::on_configure(
-    const rclcpp_lifecycle::State& previous_state)
+    const rclcpp_lifecycle::State& /*previous_state*/)
 {
   this->init_subscriptions();
   return CallbackReturn::SUCCESS;
 }
 
-CallbackReturn RmfNexusTransporter::on_activate(const rclcpp_lifecycle::State& previous_state)
+CallbackReturn RmfNexusTransporter::on_activate(const rclcpp_lifecycle::State& /*previous_state*/)
 {
   return CallbackReturn::SUCCESS;
 }
 
-CallbackReturn RmfNexusTransporter::on_deactivate(const rclcpp_lifecycle::State& previous_state)
+CallbackReturn RmfNexusTransporter::on_deactivate(const rclcpp_lifecycle::State& /*previous_state*/)
 {
+  // TODO(luca) consider cancelling all RMF jobs
   return CallbackReturn::SUCCESS;
 }
 
-CallbackReturn RmfNexusTransporter::on_cleanup(const rclcpp_lifecycle::State& previous_state)
+CallbackReturn RmfNexusTransporter::on_cleanup(const rclcpp_lifecycle::State& /*previous_state*/)
 {
+  this->_task_doable_srv.reset();
+  this->_register_workcell_client.reset();
+  this->_signal_srv.reset();
+  this->_signal_client.reset();
+  this->_cmd_server.reset();
+  this->_api_request_pub.reset();
+  this->_api_response_sub.reset();
+  this->_task_state_sub.reset();
+  this->_dispenser_result_pub.reset();
+  this->_dispenser_state_pub.reset();
+  this->_dispenser_request_sub.reset();
+
+  this->rmf_task_id_to_job_id.clear();
+  this->job_id_to_sessions.clear();
+
   return CallbackReturn::SUCCESS;
 }
 
